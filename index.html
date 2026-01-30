@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bike & Pedestrian Crashes - Wichita, KS</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Custom styles -->
+    <link rel="stylesheet" href="Bike Website.css" />
+    
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+    <div id="container">
+        <div id="map"></div>
+        <div id="sidebar">
+            <div id="sidebar-header">
+                <h1>Bike & Pedestrian Crashes</h1>
+                <p>Wichita, Kansas</p>
+            </div>
+            <div id="stats">
+                Loading data...
+            </div>
+            <div id="sidebar-content">
+                <div class="placeholder">
+                    Click on a marker to view incident details
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+
+
+
+
+
+    <script>
+        const ACCENT_COLOR = '#3ad5c6';  
+        const SELECTED_COLOR = '#3498db';         
+        
+        const map = L.map('map').setView([37.6872, -97.3301], 12);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}{r}.png?api_key=4f4c222f-cf1d-412d-a93a-e8bdaf1e4a3d', {
+            maxZoom: 20,
+            attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://stamen.com/">Stamen Design</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+        
+        // Click on map to deselect marker
+map.on('click', function(e) {
+    // Reset selected marker if there is one
+    if (selectedMarker) {
+        selectedMarker.setStyle({
+            fillColor: ACCENT_COLOR,
+            radius: 6
+        });
+        selectedMarker = null;
+    }
+    
+    // Reset sidebar to placeholder
+    document.getElementById('sidebar-content').innerHTML = `
+        <div class="placeholder">
+            Click on a marker to view incident details
+        </div>
+    `;
+});
+        let markers = [];
+        let selectedMarker = null;
+        let crashData = [];
+        
+        // Load and parse CSV
+        Papa.parse('bike_ped_crashes_2026.csv', {
+            download: true,
+            header: true,
+            complete: function(results) {
+                crashData = results.data.filter(row => row.LATITUDE && row.LONGITUDE);
+                
+                // Update stats
+                document.getElementById('stats').innerHTML = `
+                    <strong>Total Incidents:</strong> ${crashData.length}<br>
+                    <strong>Year:</strong> 2026
+                `;
+                
+                // Add markers to map
+                crashData.forEach((crash, index) => {
+                    const lat = parseFloat(crash.LATITUDE);
+                    const lng = parseFloat(crash.LONGITUDE);
+                    
+                    if (!isNaN(lat) && !isNaN(lng)) {
+                        // Create custom marker
+                        const marker = L.circleMarker([lat, lng], {
+                            radius: 9,
+                            fillColor: ACCENT_COLOR,
+                            color: ACCENT_COLOR,
+                            weight: 4,
+                            opacity: 1,
+                            fillOpacity: 1
+                        }).addTo(map);
+                        
+                        // Click handler to show details in sidebar
+                        marker.on('click', function(e) {
+                                L.DomEvent.stopPropagation(e);  // Add this line
+                            showIncidentDetails(crash, marker);
+                        });
+                        
+                        markers.push({ marker: marker, data: crash });
+                    }
+                });
+
+                // Fit map to show all markers
+                if (markers.length > 0) {
+                    const group = L.featureGroup(markers.map(m => m.marker));
+                    map.fitBounds(group.getBounds().pad(0.1));
+                }
+            },
+            error: function(error) {
+                document.getElementById('stats').innerHTML = `
+                    <strong style="color: #e74c3c;">Error loading data</strong><br>
+                    Make sure bike_ped_crashes_2026.csv is in the same folder as index.html
+                `;
+                console.error('Error loading CSV:', error);
+            }
+        });
+        
+        function showIncidentDetails(crash, marker) {
+            // Reset previous marker
+            if (selectedMarker) {
+                selectedMarker.setStyle({
+                    fillColor: ACCENT_COLOR,
+                    radius: 6
+                });
+            }
+            
+            // Highlight selected marker
+            marker.setStyle({
+                fillColor: '#3498db',
+                radius: 9
+            });
+            selectedMarker = marker;
+            
+            // Format date
+            let dateStr = 'Unknown date';
+            if (crash.ACCIDENT_DATE) {
+                const date = new Date(crash.ACCIDENT_DATE);
+                dateStr = date.toLocaleDateString('en-US', { 
+                    weekday: 'long', 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+            
+            // Build details HTML
+            const detailsHTML = `
+                <div class="incident-details">
+                    <h2>Incident Details</h2>
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">Date & Time</div>
+                        <div class="detail-value">${dateStr}</div>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">Location</div>
+                        <div class="detail-value">${crash.LOCATION || 'Unknown'}</div>
+                    </div>
+                    
+                    ${crash.INTERSECTION ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Intersection</div>
+                        <div class="detail-value">${crash.INTERSECTION}</div>
+                    </div>
+                    ` : ''}
+                    
+                    ${crash.CROSS_STREET ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Cross Street</div>
+                        <div class="detail-value">${crash.CROSS_STREET}</div>
+                    </div>
+                    ` : ''}
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">City</div>
+                        <div class="detail-value">${crash.CITY || 'Unknown'}, ${crash.STATE || ''} ${crash.POSTAL_CODE || ''}</div>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">Offense Type</div>
+                        <div class="detail-value">${crash.OFFENSE_DE || 'Unknown'}</div>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">Incident ID</div>
+                        <div class="detail-value">${crash.INCIDENTID || 'Unknown'}</div>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <div class="detail-label">Coordinates</div>
+                        <div class="detail-value">${crash.LATITUDE}, ${crash.LONGITUDE}</div>
+                    </div>
+                    
+                     ${crash.DOWFULL && crash.MONTHFULL ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Day of Week / Month</div>
+                        <div class="detail-value">${crash.DOWFULL}, ${crash.MONTHFULL}</div>
+                    </div>
+                    ` : ''}
+                    
+${crash.INCIDENTID ? `
+<div class="detail-row">
+    <div class="detail-label">Crash Report</div>
+    <div onclick="window.open('photos/${crash.INCIDENTID}.pdf', '_blank')" 
+         style="cursor: pointer; position: relative;">
+        <iframe src="photos/${crash.INCIDENTID}.pdf" 
+                style="width: 100%; height: 500px; margin-top: 10px; border-radius: 4px; border: none; pointer-events: none;"
+                onerror="this.parentElement.style.display='none'"></iframe>
+    </div>
+</div>
+` : ''}
+                </div>
+            `;
+            
+            document.getElementById('sidebar-content').innerHTML = detailsHTML;
+        }
+    </script>
+</body>
+</html>
