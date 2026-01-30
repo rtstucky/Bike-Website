@@ -27,7 +27,7 @@
             </div>
             <div id="sidebar-content">
                 <div class="placeholder">
-                    Click on a marker to view incident details
+                    Click on a marker to view crash details
                 </div>
             </div>
         </div>
@@ -67,7 +67,7 @@ map.on('click', function(e) {
     // Reset sidebar to placeholder
     document.getElementById('sidebar-content').innerHTML = `
         <div class="placeholder">
-            Click on a marker to view incident details
+            Click on a marker to view crash details
         </div>
     `;
 });
@@ -84,7 +84,7 @@ map.on('click', function(e) {
                 
                 // Update stats
                 document.getElementById('stats').innerHTML = `
-                    <strong>Total Incidents:</strong> ${crashData.length}<br>
+                    <strong>Total Crashes:</strong> ${crashData.length}<br>
                     <strong>Year:</strong> 2026
                 `;
                 
@@ -161,8 +161,8 @@ map.on('click', function(e) {
             
             // Build details HTML
             const detailsHTML = `
-                <div class="incident-details">
-                    <h2>Incident Details</h2>
+                <div class="crash-details">
+                    <h2>Crash Details</h2>
                     
                     <div class="detail-row">
                         <div class="detail-label">Date & Time</div>
