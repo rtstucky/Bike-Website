@@ -10,9 +10,6 @@
     
     <!-- Custom styles -->
     <link rel="stylesheet" href="Bike Website.css" />
-    
-    <!-- PapaParse for CSV parsing -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 </head>
 <body>
     <div id="container">
@@ -39,11 +36,11 @@
     <script>
         const ACCENT_COLOR = '#3ad5c6';  
         const SELECTED_COLOR = '#3498db';  
-        const FATALITY_COLOR =   '#ff3d5c';
+        const FATALITY_COLOR = '#ff3d5c';
 
         let fatalityList = {};
 
-        // Load fatality data FIRST, then load CSV
+        // Load fatality data FIRST, then load crash data from API
         fetch('fatalities.json')
             .then(response => response.json())
             .then(data => {
@@ -86,29 +83,46 @@
         let selectedMarker = null;
         let crashData = [];
         
-        // Load and parse CSV
+        // Load data from ArcGIS REST API
         function loadCrashData() {
-            Papa.parse('bike_ped_crashes_2026.csv', {
-                download: true,
-                header: true,
-                complete: function(results) {
-                    crashData = results.data.filter(row => row.LATITUDE && row.LONGITUDE);
+            // ArcGIS REST API endpoint (Wichita city server)
+            const apiUrl = 'https://gismaps.wichita.gov/ageweb/rest/services/OpenData/TrafficAccidents/FeatureServer/9/query';
+            
+            // Query parameters
+            const params = new URLSearchParams({
+                where: 'OFFENSE_CO IN (7020, 7070)',  // Get all records
+                outFields: '*',  // Get all fields
+                f: 'geojson',
+                returnGeometry: 'true'
+            });
+            
+            document.getElementById('stats').innerHTML = 'Loading data from Wichita Open Data...';
+            
+            fetch(`${apiUrl}?${params}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.features || data.features.length === 0) {
+                        throw new Error('No data returned from API');
+                    }
                     
+                    // Convert GeoJSON features to crash data format
+                    crashData = data.features
+                        .filter(feature => feature.geometry && feature.geometry.coordinates)
+                        .map(feature => ({
+                            LONGITUDE: feature.geometry.coordinates[0],
+                            LATITUDE: feature.geometry.coordinates[1],
+                            ...feature.properties
+                        }));
+                    
+                    // Count fatalities
+                    const fatalityCount = crashData.filter(crash => fatalityList[crash.INCIDENTID] === true).length;
+
                     // Update stats
                     document.getElementById('stats').innerHTML = `
                         <strong>Total Crashes:</strong> ${crashData.length}<br>
-                        <strong>Year:</strong> 2026
-                    `;
+                        <strong style="color: #ff3d5c;">Total Fatalities:</strong> <span style="color: #ff3d5c;">${fatalityCount}</span>
+                    `;    
                     
-
-                    // Count fatalities
-                        const fatalityCount = crashData.filter(crash => fatalityList[crash.INCIDENTID] === true).length;
-
-                        // Update stats
-                        document.getElementById('stats').innerHTML = `
-                            <strong>Total Crashes:</strong> ${crashData.length}<br>
-                            <strong style="color: #ff3d5c;">Total Fatalities:</strong> <span style="color: #ff3d5c;">${fatalityCount}</span>
-`;    
                     // Add markers to map
                     crashData.forEach((crash, index) => {
                         const lat = parseFloat(crash.LATITUDE);
@@ -147,15 +161,14 @@
                         const group = L.featureGroup(markers.map(m => m.marker));
                         map.fitBounds(group.getBounds().pad(0.1));
                     }
-                },
-                error: function(error) {
+                })
+                .catch(error => {
                     document.getElementById('stats').innerHTML = `
                         <strong style="color: #e74c3c;">Error loading data</strong><br>
-                        Make sure bike_ped_crashes_2026.csv is in the same folder as index.html
+                        ${error.message}
                     `;
-                    console.error('Error loading CSV:', error);
-                }
-            });
+                    console.error('Error loading ArcGIS data:', error);
+                });
         }
         
         function showIncidentDetails(crash, marker) {
