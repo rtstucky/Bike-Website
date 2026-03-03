@@ -34,23 +34,27 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
     <script>
-        const ACCENT_COLOR = '#3ad5c6';  
+        const ACCENT_COLOR = '#377eb8';  
         const SELECTED_COLOR = '#3498db';  
-        const FATALITY_COLOR = '#ff3d5c';
+        const FATALITY_COLOR = '#e41a1c';
+        const PEDESTRIAN_COLOR = '#bebada';
+        const DRIVER_COLOR = '#e7298a';    
+
+
 
         let fatalityList = {};
 
         // Load fatality data FIRST, then load crash data from API
         fetch('fatalities.json')
-            .then(response => response.json())
-            .then(data => {
-                fatalityList = data;
-                console.log('Fatalities loaded:', fatalityList);
-                loadCrashData();
-            })
-            .catch(error => {
-                console.log('No fatality data found');
-                loadCrashData();
+            .then(r => r.json())
+            .then(data => { fatalityList = data; })
+            .catch(() => console.log('No fatality data found'))
+            .finally(() => {
+                fetch('home_addresses.json')
+                    .then(r => r.json())
+                    .then(data => { homeAddresses = data; })
+                    .catch(() => console.log('No home address data found'))
+                    .finally(() => loadCrashData());
             });
 
         const map = L.map('map').setView([37.6872, -97.3301], 12);
@@ -70,8 +74,10 @@
                     radius: 8
                 });
                 selectedMarker = null;
+                homeLines.forEach(l => map.removeLayer(l));
+                homeLines = [];
             }
-            
+
             document.getElementById('sidebar-content').innerHTML = `
                 <div class="placeholder">
                     Click on a marker to view crash details
@@ -82,7 +88,9 @@
         let markers = [];
         let selectedMarker = null;
         let crashData = [];
-        
+        let homeAddresses = {};
+        let homeLines = [];
+
         // Load data from ArcGIS REST API
         function loadCrashData() {
             // ArcGIS REST API endpoint (Wichita city server)
@@ -171,7 +179,54 @@
                 });
         }
         
-        function showIncidentDetails(crash, marker) {
+        function buildHomeDistanceHTML(label, homeCoords, distStr, color) {
+            if (!homeCoords || homeCoords.lat == null || homeCoords.lng == null) return '';
+            if (!distStr) return '';
+            return `
+                <div class="detail-row">
+                    <div class="detail-label" style="color:${color};">${label} Home</div>
+                    <div class="detail-value">
+                        <strong>${distStr}</strong> <span style="color:#888; font-size:0.85em;"></span>
+                    </div>
+                </div>`;
+}
+
+        
+        async function drawHomeLines(crash, addresses) {
+            homeLines.forEach(l => map.removeLayer(l));
+            homeLines = [];
+
+            const crashLat = parseFloat(crash.LATITUDE);
+            const crashLng = parseFloat(crash.LONGITUDE);
+            const distances = {};
+
+            async function fetchRoute(fromLat, fromLng, color, key) {
+                try {
+                    const url = `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${crashLng},${crashLat}?overview=full&geometries=geojson`;
+                    const resp = await fetch(url);
+                    const data = await resp.json();
+                    if (data.routes && data.routes.length > 0) {
+                        const line = L.geoJSON(data.routes[0].geometry, {
+                            style: { color, weight: 6, dashArray: '6, 8', opacity: 1}
+                        }).addTo(map);
+                        homeLines.push(line);
+                        const meters = data.routes[0].distance;
+                        const miles = meters / 1609.34;
+                        distances[key] = miles < 0.1 ? (miles * 5280).toFixed(0) + ' ft' : miles.toFixed(2) + ' mi';
+                    }
+                } catch (e) { console.warn('Route fetch failed', e); }
+            }
+
+            if (addresses.pedestrian?.lat && addresses.pedestrian?.lng)
+                await fetchRoute(addresses.pedestrian.lat, addresses.pedestrian.lng, PEDESTRIAN_COLOR, 'pedestrian');
+
+            if (addresses.driver?.lat && addresses.driver?.lng)
+                await fetchRoute(addresses.driver.lat, addresses.driver.lng, DRIVER_COLOR, 'driver');
+
+            return distances;
+        }
+
+        async function showIncidentDetails(crash, marker) {
             // Reset previous marker
             if (selectedMarker) {
                 const isFatal = fatalityList[selectedMarker.incidentId] === true;
@@ -189,6 +244,10 @@
             selectedMarker = marker;
             
             // Format date
+            const crashLat = parseFloat(crash.LATITUDE);
+            const crashLng = parseFloat(crash.LONGITUDE);
+            const addresses = homeAddresses[crash.INCIDENTID] || {};
+            const distances = await drawHomeLines(crash, addresses);
             let dateStr = 'Unknown date';
             if (crash.ACCIDENT_DATE) {
                 const date = new Date(crash.ACCIDENT_DATE);
@@ -230,7 +289,8 @@
                         <div class="detail-value">${crash.CROSS_STREET}</div>
                     </div>
                     ` : ''}
-                    
+                    ${buildHomeDistanceHTML('Pedestrian', addresses.pedestrian, distances.pedestrian, PEDESTRIAN_COLOR)}
+                    ${buildHomeDistanceHTML('Driver', addresses.driver, distances.driver, DRIVER_COLOR)}
                     <div class="detail-row">
                         <div class="detail-label">City</div>
                         <div class="detail-value">${crash.CITY || 'Unknown'}, ${crash.STATE || ''} ${crash.POSTAL_CODE || ''}</div>
