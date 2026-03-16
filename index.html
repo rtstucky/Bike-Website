@@ -22,6 +22,10 @@
             <div id="stats">
                 Loading data...
             </div>
+            <div id="district-filter">
+                <div id="district-filter-label">Filter by District</div>
+                <div id="district-checkboxes">Loading districts...</div>
+            </div>
             <div id="sidebar-content">
                 <div class="placeholder">
                     Click on a marker to view crash details
@@ -34,21 +38,211 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
     <script>
-        const ACCENT_COLOR = '#377eb8';  
-        const SELECTED_COLOR = '#3498db';  
-        const FATALITY_COLOR = '#e41a1c';
-        const PEDESTRIAN_COLOR = '#bebada';
-        const DRIVER_COLOR = '#e7298a';    
-
-
+        const DEFAULT_COLOR = '#fb9a99';  
+        const FATALITY_COLOR = '#6a3d9a';
+        const CODE_RED_COLOR = '#e31a1c';
+        const CODE_YELLOW_COLOR = '#ff7f00';
+        const CODE_GREEN_COLOR = '#33a02c';
+        const DECLINE_COLOR = '#1f78b4';
+        const PEDESTRIAN_COLOR = '#cab2d6';
+        const DRIVER_COLOR = '#b15928';
 
         let fatalityList = {};
+        let markers = [];
+        let selectedMarker = null;
+        let crashData = [];
+        let homeAddresses = {};
+        let homeLines = [];
+        let districts = [];
+        let crashDistricts = {};
+        let selectedDistricts = new Set(['All']);
 
-        // Load fatality data FIRST, then load crash data from API
-        fetch('fatalities.json')
+        function getIncidentStatus(incidentId) {
+            for (const [status, incidents] of Object.entries(fatalityList)) {
+                if (incidents[incidentId] === true) return status;
+            }
+            return null;
+        }
+
+        function getStatusColor(incidentId) {
+            const status = getIncidentStatus(incidentId);
+            switch(status) {
+                case 'Fatality':                         return FATALITY_COLOR;
+                case 'Code Red':                         return CODE_RED_COLOR;
+                case 'Code Yellow':                      return CODE_YELLOW_COLOR;
+                case 'Code Green':                       return CODE_GREEN_COLOR;
+                case 'Decline EMS/No injuries reported': return DECLINE_COLOR;
+                default:                                 return DEFAULT_COLOR;
+            }
+        }
+
+        function median(arr) {
+            if (!arr.length) return null;
+            const sorted = [...arr].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+        }
+
+        function haversineDistance(lat1, lng1, lat2, lng2) {
+            const R = 3958.8;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) ** 2 +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLng/2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        function calculateAge(dob, referenceDate) {
+            if (!dob) return null;
+            const [month, day, year] = dob.split('-').map(Number);
+            const ref = referenceDate ? new Date(referenceDate) : new Date();
+            const birthDate = new Date(year, month - 1, day);
+            let age = ref.getFullYear() - birthDate.getFullYear();
+            const m = ref.getMonth() - birthDate.getMonth();
+            if (m < 0 || (m === 0 && ref.getDate() < birthDate.getDate())) age--;
+            return age;
+        }
+
+        function pointInPolygon(lat, lng, geometry) {
+            let inside = false;
+            const rings = geometry.type === 'Polygon'
+                ? [geometry.coordinates[0]]
+                : geometry.coordinates.map(r => r[0]);
+            for (const ring of rings) {
+                for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+                    const [xi, yi] = ring[i];
+                    const [xj, yj] = ring[j];
+                    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi))
+                        inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        function buildStatsHTML(visibleCrashes) {
+            const fatalityCount   = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Fatality').length;
+            const codeRedCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Red').length;
+            const codeYellowCount = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Yellow').length;
+            const codeGreenCount  = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Green').length;
+            const declineCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Decline EMS/No injuries reported').length;
+            const unknownCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === null).length;
+
+            const pedAges = [], driverAges = [], pedDists = [], driverDists = [];
+            visibleCrashes.forEach(crash => {
+                const addr = homeAddresses[crash.INCIDENTID];
+                if (!addr) return;
+                if (addr.pedestrian?.dob) pedAges.push(calculateAge(addr.pedestrian.dob, crash.ACCIDENT_DATE));
+                if (addr.driver?.dob) driverAges.push(calculateAge(addr.driver.dob, crash.ACCIDENT_DATE));
+                const crashLat = parseFloat(crash.LATITUDE);
+                const crashLng = parseFloat(crash.LONGITUDE);
+                if (addr.pedestrian?.lat && addr.pedestrian?.lng)
+                    pedDists.push(haversineDistance(addr.pedestrian.lat, addr.pedestrian.lng, crashLat, crashLng));
+                if (addr.driver?.lat && addr.driver?.lng)
+                    driverDists.push(haversineDistance(addr.driver.lat, addr.driver.lng, crashLat, crashLng));
+            });
+
+            const medPedAge     = median(pedAges)?.toFixed(0) ?? 'N/A';
+            const medDriverAge  = median(driverAges)?.toFixed(0) ?? 'N/A';
+            const medPedDist    = median(pedDists)?.toFixed(2) ?? 'N/A';
+            const medDriverDist = median(driverDists)?.toFixed(2) ?? 'N/A';
+
+            document.getElementById('stats').innerHTML = `
+                <strong>Total Crashes:</strong> ${visibleCrashes.length}<br>
+                <strong style="color:${FATALITY_COLOR};">Fatality:</strong> <span style="color:${FATALITY_COLOR};">${fatalityCount}</span><br>
+                <strong style="color:${CODE_RED_COLOR};">Code Red:</strong> <span style="color:${CODE_RED_COLOR};">${codeRedCount}</span><br>
+                <strong style="color:${CODE_YELLOW_COLOR};">Code Yellow:</strong> <span style="color:${CODE_YELLOW_COLOR};">${codeYellowCount}</span><br>
+                <strong style="color:${CODE_GREEN_COLOR};">Code Green:</strong> <span style="color:${CODE_GREEN_COLOR};">${codeGreenCount}</span><br>
+                <strong style="color:${DECLINE_COLOR};">Decline EMS:</strong> <span style="color:${DECLINE_COLOR};">${declineCount}</span><br>
+                <strong style="color:${DEFAULT_COLOR};">Unsorted:</strong> <span style="color:${DEFAULT_COLOR};">${unknownCount}</span><br><br>
+                <strong style="color:${PEDESTRIAN_COLOR};">Median Ped Age:</strong> <span style="color:${PEDESTRIAN_COLOR};">${medPedAge}</span><br>
+                <strong style="color:${DRIVER_COLOR};">Median Driver Age:</strong> <span style="color:${DRIVER_COLOR};">${medDriverAge}</span><br>
+                <strong style="color:${PEDESTRIAN_COLOR};">Median Ped Distance:</strong> <span style="color:${PEDESTRIAN_COLOR};">${medPedDist} mi</span><br>
+                <strong style="color:${DRIVER_COLOR};">Median Driver Distance:</strong> <span style="color:${DRIVER_COLOR};">${medDriverDist} mi</span>
+            `;
+        }
+
+        function applyDistrictFilter() {
+            const isAll = selectedDistricts.has('All') || selectedDistricts.size === 0;
+
+            const visibleCrashes = crashData.filter(crash => {
+                if (isAll) return true;
+                return selectedDistricts.has(crashDistricts[crash.INCIDENTID]);
+            });
+
+            markers.forEach(({ marker, data }) => {
+                const visible = isAll || selectedDistricts.has(crashDistricts[data.INCIDENTID]);
+                if (visible) marker.addTo(map);
+                else map.removeLayer(marker);
+            });
+
+            buildStatsHTML(visibleCrashes);
+        }
+
+        function handleDistrictChange(checkbox) {
+            if (checkbox.value === 'All') {
+                selectedDistricts = new Set(['All']);
+                document.querySelectorAll('#district-checkboxes input[type=checkbox]').forEach(cb => {
+                    cb.checked = checkbox.checked;
+                    if (cb.value !== 'All') selectedDistricts.add(cb.value);
+                });
+                if (!checkbox.checked) selectedDistricts = new Set();
+            } else {
+                selectedDistricts.delete('All');
+                document.querySelector('#district-checkboxes input[value="All"]').checked = false;
+                if (checkbox.checked) selectedDistricts.add(checkbox.value);
+                else selectedDistricts.delete(checkbox.value);
+            }
+            applyDistrictFilter();
+        }
+
+        function buildDistrictCheckboxes() {
+            const nameField = 'COUNCIL'
+
+            const names = districts.map(d => d.properties[nameField]).filter(Boolean).sort();
+            const container = document.getElementById('district-checkboxes');
+
+            container.innerHTML = `
+                <label class="district-check">
+                    <input type="checkbox" value="All" checked onchange="handleDistrictChange(this)"> All
+                </label>
+                ${names.map(name => `
+                <label class="district-check">
+                    <input type="checkbox" value="${name}" onchange="handleDistrictChange(this)"> ${name}
+                </label>`).join('')}
+            `;
+        }
+
+        function loadDistricts() {
+            const url = 'https://gismaps.wichita.gov/ageweb/rest/services/COWGIS/Districts/MapServer/3/query?where=1%3D1&outFields=COUNCIL&outSR=4326&f=geojson';
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    districts = data.features;
+                    const nameField = 'COUNCIL';
+                    crashData.forEach(crash => {
+                        const lat = parseFloat(crash.LATITUDE);
+                        const lng = parseFloat(crash.LONGITUDE);
+                        if (isNaN(lat) || isNaN(lng)) return;
+                        for (const district of districts) {
+                            if (pointInPolygon(lat, lng, district.geometry)) {
+                                crashDistricts[crash.INCIDENTID] = String(district.properties[nameField]);
+                                break;
+                            }
+                        }
+                    });
+                    buildDistrictCheckboxes();
+                })
+                .catch(() => {
+                    document.getElementById('district-checkboxes').innerHTML = 'Could not load districts';
+                });
+        }
+
+        // Load data chain
+        fetch('status.json')
             .then(r => r.json())
             .then(data => { fatalityList = data; })
-            .catch(() => console.log('No fatality data found'))
+            .catch(() => console.log('No status data found'))
             .finally(() => {
                 fetch('home_addresses.json')
                     .then(r => r.json())
@@ -58,26 +252,22 @@
             });
 
         const map = L.map('map').setView([37.6872, -97.3301], 12);
-        
-        // Add Stadia Maps tiles
+
         L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}{r}.png?api_key=4f4c222f-cf1d-412d-a93a-e8bdaf1e4a3d', {
             maxZoom: 20,
             attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://stamen.com/">Stamen Design</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         }).addTo(map);
-        
-        // Click on map to deselect marker
+
         map.on('click', function(e) {
             if (selectedMarker) {
-                const isFatal = fatalityList[selectedMarker.incidentId] === true;
                 selectedMarker.setStyle({
-                    fillColor: isFatal ? FATALITY_COLOR : ACCENT_COLOR,
+                    fillColor: getStatusColor(selectedMarker.incidentId),
                     radius: 8
                 });
                 selectedMarker = null;
                 homeLines.forEach(l => map.removeLayer(l));
                 homeLines = [];
             }
-
             document.getElementById('sidebar-content').innerHTML = `
                 <div class="placeholder">
                     Click on a marker to view crash details
@@ -85,35 +275,24 @@
             `;
         });
 
-        let markers = [];
-        let selectedMarker = null;
-        let crashData = [];
-        let homeAddresses = {};
-        let homeLines = [];
-
-        // Load data from ArcGIS REST API
         function loadCrashData() {
-            // ArcGIS REST API endpoint (Wichita city server)
             const apiUrl = 'https://gismaps.wichita.gov/ageweb/rest/services/OpenData/TrafficAccidents/FeatureServer/9/query';
-            
-            // Query parameters
             const params = new URLSearchParams({
-                where: 'OFFENSE_CO IN (7020, 7070)',  // Get all records
-                outFields: '*',  // Get all fields
+                where: 'OFFENSE_CO IN (7020, 7070)',
+                outFields: '*',
                 f: 'geojson',
                 returnGeometry: 'true'
             });
-            
+
             document.getElementById('stats').innerHTML = 'Loading data from Wichita Open Data...';
-            
+
             fetch(`${apiUrl}?${params}`)
                 .then(response => response.json())
                 .then(data => {
                     if (!data.features || data.features.length === 0) {
                         throw new Error('No data returned from API');
                     }
-                    
-                    // Convert GeoJSON features to crash data format
+
                     crashData = data.features
                         .filter(feature => feature.geometry && feature.geometry.coordinates)
                         .map(feature => ({
@@ -121,54 +300,42 @@
                             LATITUDE: feature.geometry.coordinates[1],
                             ...feature.properties
                         }));
-                    
-                    // Count fatalities
-                    const fatalityCount = crashData.filter(crash => fatalityList[crash.INCIDENTID] === true).length;
 
-                    // Update stats
-                    document.getElementById('stats').innerHTML = `
-                        <strong>Total Crashes:</strong> ${crashData.length}<br>
-                        <strong style="color: #ff3d5c;">Total Fatalities:</strong> <span style="color: #ff3d5c;">${fatalityCount}</span>
-                    `;    
-                    
-                    // Add markers to map
-                    crashData.forEach((crash, index) => {
+                    buildStatsHTML(crashData);
+
+                    crashData.forEach((crash) => {
                         const lat = parseFloat(crash.LATITUDE);
                         const lng = parseFloat(crash.LONGITUDE);
-                        
+
                         if (!isNaN(lat) && !isNaN(lng)) {
-                            // Determine marker color based on fatality
-                            const isFatal = fatalityList[crash.INCIDENTID] === true;
-                            const markerColor = isFatal ? FATALITY_COLOR : ACCENT_COLOR;
-                            
-                            // Create custom marker
+                            const markerColor = getStatusColor(crash.INCIDENTID);
+
                             const marker = L.circleMarker([lat, lng], {
                                 radius: 8,
                                 fillColor: markerColor,
                                 color: 'white',
                                 weight: 2,
                                 opacity: 1,
-                                fillOpacity: 0.8
+                                fillOpacity: 1
                             }).addTo(map);
-                            
-                            // Store incident ID for later reference
+
                             marker.incidentId = crash.INCIDENTID;
-                            
-                            // Click handler to show details in sidebar
+
                             marker.on('click', function(e) {
                                 L.DomEvent.stopPropagation(e);
                                 showIncidentDetails(crash, marker);
                             });
-                            
-                            markers.push({ marker: marker, data: crash });
+
+                            markers.push({ marker, data: crash });
                         }
                     });
 
-                    // Fit map to show all markers
                     if (markers.length > 0) {
                         const group = L.featureGroup(markers.map(m => m.marker));
                         map.fitBounds(group.getBounds().pad(0.1));
                     }
+
+                    loadDistricts();
                 })
                 .catch(error => {
                     document.getElementById('stats').innerHTML = `
@@ -178,7 +345,7 @@
                     console.error('Error loading ArcGIS data:', error);
                 });
         }
-        
+
         function buildHomeDistanceHTML(label, homeCoords, distStr, color) {
             if (!homeCoords || homeCoords.lat == null || homeCoords.lng == null) return '';
             if (!distStr) return '';
@@ -186,12 +353,11 @@
                 <div class="detail-row">
                     <div class="detail-label" style="color:${color};">${label} Home</div>
                     <div class="detail-value">
-                        <strong>${distStr}</strong> <span style="color:#888; font-size:0.85em;"></span>
+                        <span style="color:${color};">${distStr}</span>
                     </div>
                 </div>`;
-}
+        }
 
-        
         async function drawHomeLines(crash, addresses) {
             homeLines.forEach(l => map.removeLayer(l));
             homeLines = [];
@@ -207,7 +373,7 @@
                     const data = await resp.json();
                     if (data.routes && data.routes.length > 0) {
                         const line = L.geoJSON(data.routes[0].geometry, {
-                            style: { color, weight: 6, dashArray: '6, 8', opacity: 1}
+                            style: { color, weight: 8, opacity: 1 }
                         }).addTo(map);
                         homeLines.push(line);
                         const meters = data.routes[0].distance;
@@ -227,84 +393,69 @@
         }
 
         async function showIncidentDetails(crash, marker) {
-            // Reset previous marker
             if (selectedMarker) {
-                const isFatal = fatalityList[selectedMarker.incidentId] === true;
                 selectedMarker.setStyle({
-                    fillColor: isFatal ? FATALITY_COLOR : ACCENT_COLOR,
+                    fillColor: getStatusColor(selectedMarker.incidentId),
                     radius: 8
                 });
             }
-            
-            // Highlight selected marker
+
             marker.setStyle({
-                fillColor: '#3498db',
-                radius: 9
+                fillColor: getStatusColor(marker.incidentId),
+                radius: 12
             });
             selectedMarker = marker;
-            
-            // Format date
-            const crashLat = parseFloat(crash.LATITUDE);
-            const crashLng = parseFloat(crash.LONGITUDE);
+
             const addresses = homeAddresses[crash.INCIDENTID] || {};
             const distances = await drawHomeLines(crash, addresses);
+
             let dateStr = 'Unknown date';
             if (crash.ACCIDENT_DATE) {
                 const date = new Date(crash.ACCIDENT_DATE);
-                dateStr = date.toLocaleDateString('en-US', { 
-                    weekday: 'long', 
-                    year: 'numeric', 
-                    month: 'long', 
+                dateStr = date.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
                     day: 'numeric',
                     hour: '2-digit',
                     minute: '2-digit'
                 });
             }
-            
-            // Build details HTML
+
             const detailsHTML = `
                 <div class="crash-details">
                     <h2>Crash Details</h2>
-                    
+
                     <div class="detail-row">
                         <div class="detail-label">Date & Time</div>
                         <div class="detail-value">${dateStr}</div>
                     </div>
-                    
-                    <div class="detail-row">
-                        <div class="detail-label">Location</div>
-                        <div class="detail-value">${crash.LOCATION || 'Unknown'}</div>
-                    </div>
-                    
+
                     ${crash.INTERSECTION ? `
                     <div class="detail-row">
                         <div class="detail-label">Intersection</div>
                         <div class="detail-value">${crash.INTERSECTION}</div>
                     </div>
                     ` : ''}
-                    
-                    ${crash.CROSS_STREET ? `
-                    <div class="detail-row">
-                        <div class="detail-label">Cross Street</div>
-                        <div class="detail-value">${crash.CROSS_STREET}</div>
-                    </div>
-                    ` : ''}
+
                     ${buildHomeDistanceHTML('Pedestrian', addresses.pedestrian, distances.pedestrian, PEDESTRIAN_COLOR)}
+                    ${addresses.pedestrian?.dob ? `
+                    <div class="detail-row">
+                        <div class="detail-label" style="color:${PEDESTRIAN_COLOR};">Pedestrian Age</div>
+                        <div class="detail-value" style="color:${PEDESTRIAN_COLOR};">${calculateAge(addresses.pedestrian.dob, crash.ACCIDENT_DATE)}</div>
+                    </div>` : ''}
+
                     ${buildHomeDistanceHTML('Driver', addresses.driver, distances.driver, DRIVER_COLOR)}
+                    ${addresses.driver?.dob ? `
                     <div class="detail-row">
-                        <div class="detail-label">City</div>
-                        <div class="detail-value">${crash.CITY || 'Unknown'}, ${crash.STATE || ''} ${crash.POSTAL_CODE || ''}</div>
-                    </div>
-                    
+                        <div class="detail-label" style="color:${DRIVER_COLOR};">Driver Age</div>
+                        <div class="detail-value" style="color:${DRIVER_COLOR};">${calculateAge(addresses.driver.dob, crash.ACCIDENT_DATE)}</div>
+                    </div>` : ''}
+
+                    ${getIncidentStatus(crash.INCIDENTID) ? `
                     <div class="detail-row">
-                        <div class="detail-label">Offense Type</div>
-                        <div class="detail-value">${crash.OFFENSE_DE || 'Unknown'}</div>
-                    </div>
-                    
-                    ${fatalityList[crash.INCIDENTID] === true ? `
-                    <div class="detail-row">
-                        <div class="detail-label">Condition</div>
-                        <div class="detail-value" style="color: ${FATALITY_COLOR}; font-weight: bold;">Fatality</div>
+                        <div class="detail-label" style="color:${getStatusColor(crash.INCIDENTID)};">Condition</div>
+                        <div class="detail-value" style="color:${getStatusColor(crash.INCIDENTID)};">${getIncidentStatus(crash.INCIDENTID)}</div>
                     </div>
                     ` : ''}
 
@@ -312,25 +463,13 @@
                         <div class="detail-label">Incident ID</div>
                         <div class="detail-value">${crash.INCIDENTID || 'Unknown'}</div>
                     </div>
-                    
-                    <div class="detail-row">
-                        <div class="detail-label">Coordinates</div>
-                        <div class="detail-value">${crash.LATITUDE}, ${crash.LONGITUDE}</div>
-                    </div>
-                    
-                    ${crash.DOWFULL && crash.MONTHFULL ? `
-                    <div class="detail-row">
-                        <div class="detail-label">Day of Week / Month</div>
-                        <div class="detail-value">${crash.DOWFULL}, ${crash.MONTHFULL}</div>
-                    </div>
-                    ` : ''}
-                    
+
                     ${crash.INCIDENTID ? `
                     <div class="detail-row">
                         <div class="detail-label">Crash Report</div>
-                        <div onclick="window.open('photos/${crash.INCIDENTID}.pdf', '_blank')" 
+                        <div onclick="window.open('photos/${crash.INCIDENTID}.pdf', '_blank')"
                              style="cursor: pointer; position: relative;">
-                            <iframe src="photos/${crash.INCIDENTID}.pdf" 
+                            <iframe src="photos/${crash.INCIDENTID}.pdf"
                                     style="width: 100%; height: 500px; margin-top: 10px; border-radius: 4px; border: none; pointer-events: none;"
                                     onerror="this.parentElement.style.display='none'"></iframe>
                         </div>
@@ -338,7 +477,7 @@
                     ` : ''}
                 </div>
             `;
-            
+
             document.getElementById('sidebar-content').innerHTML = detailsHTML;
         }
     </script>

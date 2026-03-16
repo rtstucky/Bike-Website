@@ -1,5 +1,5 @@
 :root {
-    --accent-color: #3ad5c6;
+    --accent-color: #fb9a99;
 }
 
 * {
@@ -12,7 +12,7 @@ body, html {
     margin: 0;
     padding: 0;
     font-family: 'Atkinson Hyperlegible', sans-serif;
-    color: white;
+    color: black;
     height: 100vh;
     overflow: hidden;
 }
@@ -36,7 +36,7 @@ body, html {
     width: 20%;
     height: 100vh;
     overflow-y: auto;
-    background: rgb(0, 0, 0);
+    background: white;
     padding: 2em;
     display: flex;
     flex-direction: column;
@@ -45,7 +45,7 @@ body, html {
 #sidebar-header {
     padding: 0 0 20px 0;
     background: transparent;
-    color: white;
+    color: black;
     top: 0;
     z-index: 1000;
 }
@@ -61,13 +61,33 @@ body, html {
 }
 
 #stats {
-    padding: 15px 0;
-    background: rgb(0, 0, 0);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-
+    padding: 20px 0;
+    background: transparent;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);  /* was: rgba(255,255,255,0.2) */
     font-size: 14px;
     margin-bottom: 20px;
- 
+}
+
+#district-filter {
+    padding: 20px 0;  /* was: 15px 0 */
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+    font-size: 13px;
+}
+
+#district-filter-label {
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    color: #000;
+}
+
+.district-check {
+    display: block;
+    margin-bottom: 4px;
+    cursor: pointer;
 }
 
 #sidebar-content {
@@ -82,13 +102,13 @@ body, html {
 .incident-details h2 {
     font-size: 18px;
     margin-bottom: 15px;
-    color: white;
+    color: black;
 }
 
 .detail-row {
     margin-bottom: 12px;
     padding-bottom: 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);  /* was: rgba(255,255,255,0.1) */
 }
 
 .detail-row:last-child {
@@ -105,12 +125,12 @@ body, html {
 }
 
 .detail-value {
-    color: white;
+    color: black;
     font-size: 15px;
 }
 
 .placeholder {
-    color: rgba(255, 255, 255, 0.5);
+    color: black;
     text-align: center;
     padding: 40px 20px;
     font-style: italic;
@@ -132,15 +152,27 @@ body, html {
 
 
 @media (max-width: 768px) {
+    body, html {
+        overflow: auto;
+    }
+
+    #container {
+        flex-direction: column;
+        height: auto;
+    }
+
     #map {
         position: relative;
         width: 100%;
-        height: 60vh;
+        height: 50vh;
+        order: 2;
     }
-    
+
     #sidebar {
         position: relative;
         width: 100%;
-        height: 40vh;
+        height: auto;
+        overflow-y: visible;
+        order: 1;
     }
 }
