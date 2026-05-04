@@ -12,12 +12,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bike & Pedestrian Crashes - Wichita, KS</title>
-    
-    <!-- Leaflet CSS -->
+
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- Custom styles -->
     <link rel="stylesheet" href="Bike Website.css" />
 </head>
 <body>
@@ -31,54 +28,168 @@
                 </div>
                 <p>Wichita, Kansas</p>
             </div>
-            <div id="stats">
-                Loading data...
-            </div>
+            <div id="stats">Loading data...</div>
             <div id="district-filter">
                 <div id="district-filter-label">Filter by District</div>
                 <div id="district-checkboxes">Loading districts...</div>
             </div>
-            <div id="sidebar-content">
-                <div class="placeholder">
-                    Click on a marker to view crash details
+            <div id="characteristics-filter">
+                <div id="characteristics-filter-header">
+                    <span id="characteristics-filter-label">Characteristics</span>
+                    <button id="char-toggle-btn" onclick="toggleAllChars()">Select All</button>
                 </div>
+                <div id="characteristics-pills"></div>
+            </div>
+            <div id="char-chart-section">
+                <div id="char-chart-label">Characteristic Counts</div>
+                <div id="char-chart"></div>
+            </div>
+            <div id="sidebar-content">
+                <div class="placeholder">Click on a marker to view crash details</div>
             </div>
         </div>
     </div>
 
-    <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
+
     <script>
-        const DEFAULT_COLOR = '#fb9a99';  
-        const FATALITY_COLOR = '#6a3d9a';
-        const CODE_RED_COLOR = '#e31a1c';
+        const DEFAULT_COLOR    = '#fb9a99';
+        const FATALITY_COLOR   = '#6a3d9a';
+        const CODE_RED_COLOR   = '#e31a1c';
         const CODE_YELLOW_COLOR = '#ff7f00';
         const CODE_GREEN_COLOR = '#33a02c';
-        const DECLINE_COLOR = '#1f78b4';
+        const DECLINE_COLOR    = '#1f78b4';
         const PEDESTRIAN_COLOR = '#cab2d6';
-        const DRIVER_COLOR = '#b15928';
+        const DRIVER_COLOR     = '#b15928';
 
-        let fatalityList = {};
         let markers = [];
         let selectedMarker = null;
         let crashData = [];
-        let homeAddresses = {};
         let homeLines = [];
         let districts = [];
         let crashDistricts = {};
         let selectedDistricts = new Set(['All']);
+        let selectedCharacteristics = new Set();
+        let allCharacteristics = [];
 
-        function getIncidentStatus(incidentId) {
-            for (const [status, incidents] of Object.entries(fatalityList)) {
-                if (incidents[incidentId] === true) return status;
+        // ── Characteristics parsing ──────────────────────────────────────────
+
+        function parseCharacteristics(raw) {
+            if (!raw || raw === 'NULL') return [];
+            const inner = raw.slice(1, -1); // strip outer { }
+            const tags = [];
+            let inQuote = false, current = '';
+            for (const ch of inner) {
+                if (ch === '"') { inQuote = !inQuote; }
+                else if (ch === ',' && !inQuote) { tags.push(current.trim().toLowerCase()); current = ''; }
+                else { current += ch; }
             }
-            return null;
+            if (current.trim()) tags.push(current.trim().toLowerCase());
+            return tags.filter(Boolean);
         }
 
-        function getStatusColor(incidentId) {
-            const status = getIncidentStatus(incidentId);
-            switch(status) {
+        function buildCharacteristicsPills() {
+            const container = document.getElementById('characteristics-pills');
+            container.innerHTML = allCharacteristics.map(tag =>
+                `<span class="char-pill" data-tag="${tag.replace(/"/g, '&quot;')}">${tag}</span>`
+            ).join('');
+            container.addEventListener('click', e => {
+                const pill = e.target.closest('.char-pill');
+                if (!pill) return;
+                const tag = pill.dataset.tag;
+                if (selectedCharacteristics.has(tag)) {
+                    selectedCharacteristics.delete(tag);
+                    pill.classList.remove('active');
+                } else {
+                    selectedCharacteristics.add(tag);
+                    pill.classList.add('active');
+                }
+                document.getElementById('char-toggle-btn').textContent =
+                    selectedCharacteristics.size === 0 ? 'Select All' : 'Deselect All';
+                applyFilters();
+            });
+        }
+
+        function toggleAllChars() {
+            const btn = document.getElementById('char-toggle-btn');
+            if (selectedCharacteristics.size === 0) {
+                allCharacteristics.forEach(t => selectedCharacteristics.add(t));
+                btn.textContent = 'Deselect All';
+                document.querySelectorAll('.char-pill').forEach(p => p.classList.add('active'));
+            } else {
+                selectedCharacteristics.clear();
+                btn.textContent = 'Select All';
+                document.querySelectorAll('.char-pill').forEach(p => p.classList.remove('active'));
+            }
+            applyFilters();
+        }
+
+        // ── Combined filter ──────────────────────────────────────────────────
+
+        function applyFilters() {
+            const isAllDistricts = selectedDistricts.has('All') || selectedDistricts.size === 0;
+            const isAllChars = selectedCharacteristics.size === 0;
+
+            const visibleCrashes = crashData.filter(crash => {
+                const districtOk = isAllDistricts || selectedDistricts.has(crashDistricts[crash.incidentid]);
+                const charOk = isAllChars || crash._tags.some(t => selectedCharacteristics.has(t));
+                return districtOk && charOk;
+            });
+
+            markers.forEach(({ marker, data }) => {
+                const districtOk = isAllDistricts || selectedDistricts.has(crashDistricts[data.incidentid]);
+                const charOk = isAllChars || data._tags.some(t => selectedCharacteristics.has(t));
+                if (districtOk && charOk) marker.addTo(map);
+                else map.removeLayer(marker);
+            });
+
+            buildStatsHTML(visibleCrashes);
+            buildCharChart(visibleCrashes);
+        }
+
+        function buildCharChart(visibleCrashes) {
+            const counts = {};
+            visibleCrashes.forEach(crash => {
+                crash._tags.forEach(t => { counts[t] = (counts[t] || 0) + 1; });
+            });
+
+            const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+            const container = document.getElementById('char-chart');
+            if (!sorted.length) { container.innerHTML = '<span style="color:#999;font-size:11px;">No characteristics in view</span>'; return; }
+
+            const max = sorted[0][1];
+            container.innerHTML = sorted.map(([tag, count]) => `
+                <div class="chart-row">
+                    <div class="chart-label">${tag}</div>
+                    <div class="chart-bar-wrap">
+                        <div class="chart-bar" style="width:${(count / max * 100).toFixed(1)}%"></div>
+                        <span class="chart-count">${count}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function handleDistrictChange(checkbox) {
+            if (checkbox.value === 'All') {
+                selectedDistricts = new Set(['All']);
+                document.querySelectorAll('#district-checkboxes input[type=checkbox]').forEach(cb => {
+                    cb.checked = checkbox.checked;
+                    if (cb.value !== 'All') selectedDistricts.add(cb.value);
+                });
+                if (!checkbox.checked) selectedDistricts = new Set();
+            } else {
+                selectedDistricts.delete('All');
+                document.querySelector('#district-checkboxes input[value="All"]').checked = false;
+                if (checkbox.checked) selectedDistricts.add(checkbox.value);
+                else selectedDistricts.delete(checkbox.value);
+            }
+            applyFilters();
+        }
+
+        // ── Stats ────────────────────────────────────────────────────────────
+
+        function getStatusColor(severity) {
+            switch(severity) {
                 case 'Fatality':                         return FATALITY_COLOR;
                 case 'Code Red':                         return CODE_RED_COLOR;
                 case 'Code Yellow':                      return CODE_YELLOW_COLOR;
@@ -105,9 +216,10 @@
             return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         }
 
+        // Expects YYYY-MM-DD format (ISO date from SQL export)
         function calculateAge(dob, referenceDate) {
             if (!dob) return null;
-            const [month, day, year] = dob.split('-').map(Number);
+            const [year, month, day] = dob.split('-').map(Number);
             const ref = referenceDate ? new Date(referenceDate) : new Date();
             const birthDate = new Date(year, month - 1, day);
             let age = ref.getFullYear() - birthDate.getFullYear();
@@ -116,42 +228,26 @@
             return age;
         }
 
-        function pointInPolygon(lat, lng, geometry) {
-            let inside = false;
-            const rings = geometry.type === 'Polygon'
-                ? [geometry.coordinates[0]]
-                : geometry.coordinates.map(r => r[0]);
-            for (const ring of rings) {
-                for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-                    const [xi, yi] = ring[i];
-                    const [xj, yj] = ring[j];
-                    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi))
-                        inside = !inside;
-                }
-            }
-            return inside;
-        }
-
         function buildStatsHTML(visibleCrashes) {
-            const fatalityCount   = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Fatality').length;
-            const codeRedCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Red').length;
-            const codeYellowCount = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Yellow').length;
-            const codeGreenCount  = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Code Green').length;
-            const declineCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === 'Decline EMS/No injuries reported').length;
-            const unknownCount    = visibleCrashes.filter(c => getIncidentStatus(c.INCIDENTID) === null).length;
+            const fatalityCount   = visibleCrashes.filter(c => c.accident_severity === 'Fatality').length;
+            const codeRedCount    = visibleCrashes.filter(c => c.accident_severity === 'Code Red').length;
+            const codeYellowCount = visibleCrashes.filter(c => c.accident_severity === 'Code Yellow').length;
+            const codeGreenCount  = visibleCrashes.filter(c => c.accident_severity === 'Code Green').length;
+            const declineCount    = visibleCrashes.filter(c => c.accident_severity === 'Decline EMS/No injuries reported').length;
+            const unknownCount    = visibleCrashes.filter(c => !c.accident_severity).length;
 
             const pedAges = [], driverAges = [], pedDists = [], driverDists = [];
             visibleCrashes.forEach(crash => {
-                const addr = homeAddresses[crash.INCIDENTID];
-                if (!addr) return;
-                if (addr.pedestrian?.dob) pedAges.push(calculateAge(addr.pedestrian.dob, crash.ACCIDENT_DATE));
-                if (addr.driver?.dob) driverAges.push(calculateAge(addr.driver.dob, crash.ACCIDENT_DATE));
-                const crashLat = parseFloat(crash.LATITUDE);
-                const crashLng = parseFloat(crash.LONGITUDE);
-                if (addr.pedestrian?.lat && addr.pedestrian?.lng)
-                    pedDists.push(haversineDistance(addr.pedestrian.lat, addr.pedestrian.lng, crashLat, crashLng));
-                if (addr.driver?.lat && addr.driver?.lng)
-                    driverDists.push(haversineDistance(addr.driver.lat, addr.driver.lng, crashLat, crashLng));
+                const crashLat = parseFloat(crash.latitude);
+                const crashLng = parseFloat(crash.longitude);
+                if (crash.pedestrian_dob)
+                    pedAges.push(calculateAge(crash.pedestrian_dob, crash.accident_date));
+                if (crash.driver_dob)
+                    driverAges.push(calculateAge(crash.driver_dob, crash.accident_date));
+                if (crash.pedestrian_home_lat && crash.pedestrian_home_lng)
+                    pedDists.push(haversineDistance(parseFloat(crash.pedestrian_home_lat), parseFloat(crash.pedestrian_home_lng), crashLat, crashLng));
+                if (crash.driver_home_lat && crash.driver_home_lng)
+                    driverDists.push(haversineDistance(parseFloat(crash.driver_home_lat), parseFloat(crash.driver_home_lng), crashLat, crashLng));
             });
 
             const medPedAge     = median(pedAges)?.toFixed(0) ?? 'N/A';
@@ -174,47 +270,27 @@
             `;
         }
 
-        function applyDistrictFilter() {
-            const isAll = selectedDistricts.has('All') || selectedDistricts.size === 0;
+        // ── Districts ────────────────────────────────────────────────────────
 
-            const visibleCrashes = crashData.filter(crash => {
-                if (isAll) return true;
-                return selectedDistricts.has(crashDistricts[crash.INCIDENTID]);
-            });
-
-            markers.forEach(({ marker, data }) => {
-                const visible = isAll || selectedDistricts.has(crashDistricts[data.INCIDENTID]);
-                if (visible) marker.addTo(map);
-                else map.removeLayer(marker);
-            });
-
-            buildStatsHTML(visibleCrashes);
-        }
-
-        function handleDistrictChange(checkbox) {
-            if (checkbox.value === 'All') {
-                selectedDistricts = new Set(['All']);
-                document.querySelectorAll('#district-checkboxes input[type=checkbox]').forEach(cb => {
-                    cb.checked = checkbox.checked;
-                    if (cb.value !== 'All') selectedDistricts.add(cb.value);
-                });
-                if (!checkbox.checked) selectedDistricts = new Set();
-            } else {
-                selectedDistricts.delete('All');
-                document.querySelector('#district-checkboxes input[value="All"]').checked = false;
-                if (checkbox.checked) selectedDistricts.add(checkbox.value);
-                else selectedDistricts.delete(checkbox.value);
+        function pointInPolygon(lat, lng, geometry) {
+            let inside = false;
+            const rings = geometry.type === 'Polygon'
+                ? [geometry.coordinates[0]]
+                : geometry.coordinates.map(r => r[0]);
+            for (const ring of rings) {
+                for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+                    const [xi, yi] = ring[i];
+                    const [xj, yj] = ring[j];
+                    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi))
+                        inside = !inside;
+                }
             }
-            applyDistrictFilter();
+            return inside;
         }
 
         function buildDistrictCheckboxes() {
-            const nameField = 'COUNCIL'
-
-            const names = districts.map(d => d.properties[nameField]).filter(Boolean).sort();
-            const container = document.getElementById('district-checkboxes');
-
-            container.innerHTML = `
+            const names = districts.map(d => d.properties['COUNCIL']).filter(Boolean).sort();
+            document.getElementById('district-checkboxes').innerHTML = `
                 <label class="district-check">
                     <input type="checkbox" value="All" checked onchange="handleDistrictChange(this)"> All
                 </label>
@@ -231,14 +307,13 @@
                 .then(r => r.json())
                 .then(data => {
                     districts = data.features;
-                    const nameField = 'COUNCIL';
                     crashData.forEach(crash => {
-                        const lat = parseFloat(crash.LATITUDE);
-                        const lng = parseFloat(crash.LONGITUDE);
+                        const lat = parseFloat(crash.latitude);
+                        const lng = parseFloat(crash.longitude);
                         if (isNaN(lat) || isNaN(lng)) return;
                         for (const district of districts) {
                             if (pointInPolygon(lat, lng, district.geometry)) {
-                                crashDistricts[crash.INCIDENTID] = String(district.properties[nameField]);
+                                crashDistricts[crash.incidentid] = String(district.properties['COUNCIL']);
                                 break;
                             }
                         }
@@ -250,96 +325,71 @@
                 });
         }
 
-        // Load data chain
-        fetch('status.json')
-            .then(r => r.json())
-            .then(data => { fatalityList = data; })
-            .catch(() => console.log('No status data found'))
-            .finally(() => {
-                fetch('home_addresses.json')
-                    .then(r => r.json())
-                    .then(data => { homeAddresses = data; })
-                    .catch(() => console.log('No home address data found'))
-                    .finally(() => loadCrashData());
-            });
+        // ── CSV loading ──────────────────────────────────────────────────────
 
-        const map = L.map('map').setView([37.6872, -97.3301], 12);
-
-        L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}{r}.png?api_key=4f4c222f-cf1d-412d-a93a-e8bdaf1e4a3d', {
-            maxZoom: 20,
-            attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://stamen.com/">Stamen Design</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        }).addTo(map);
-
-        map.on('click', function(e) {
-            if (selectedMarker) {
-                selectedMarker.setStyle({
-                    fillColor: getStatusColor(selectedMarker.incidentId),
-                    radius: 8
-                });
-                selectedMarker = null;
-                homeLines.forEach(l => map.removeLayer(l));
-                homeLines = [];
+        function parseCSVLine(line) {
+            const result = [];
+            let inQuote = false, current = '';
+            for (const ch of line) {
+                if (ch === '"') { inQuote = !inQuote; }
+                else if (ch === ',' && !inQuote) { result.push(current); current = ''; }
+                else { current += ch; }
             }
-            document.getElementById('sidebar-content').innerHTML = `
-                <div class="placeholder">
-                    Click on a marker to view crash details
-                </div>
-            `;
-        });
+            result.push(current);
+            return result;
+        }
+
+        function parseCSV(text) {
+            const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim());
+            const headers = parseCSVLine(lines[0]);
+            return lines.slice(1).map(line => {
+                const values = parseCSVLine(line);
+                const obj = {};
+                headers.forEach((h, i) => {
+                    const v = values[i];
+                    obj[h] = (v === 'NULL' || v === undefined || v === '') ? null : v;
+                });
+                return obj;
+            });
+        }
 
         function loadCrashData() {
-            const apiUrl = 'https://gismaps.wichita.gov/ageweb/rest/services/OpenData/TrafficAccidents/FeatureServer/9/query';
-            const params = new URLSearchParams({
-                where: 'OFFENSE_CO IN (7020, 7070)',
-                outFields: '*',
-                f: 'geojson',
-                returnGeometry: 'true'
-            });
+            document.getElementById('stats').innerHTML = 'Loading data...';
+            fetch('ped_crashes_2026.csv')
+                .then(r => r.text())
+                .then(text => {
+                    crashData = parseCSV(text).filter(r => r.latitude && r.longitude);
 
-            document.getElementById('stats').innerHTML = 'Loading data from Wichita Open Data...';
-
-            fetch(`${apiUrl}?${params}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (!data.features || data.features.length === 0) {
-                        throw new Error('No data returned from API');
-                    }
-
-                    crashData = data.features
-                        .filter(feature => feature.geometry && feature.geometry.coordinates)
-                        .map(feature => ({
-                            LONGITUDE: feature.geometry.coordinates[0],
-                            LATITUDE: feature.geometry.coordinates[1],
-                            ...feature.properties
-                        }));
+                    // Parse characteristics and collect all unique tags
+                    const charSet = new Set();
+                    crashData.forEach(crash => {
+                        crash._tags = parseCharacteristics(crash.characteristics);
+                        crash._tags.forEach(t => charSet.add(t));
+                    });
+                    allCharacteristics = [...charSet].sort();
+                    buildCharacteristicsPills();
 
                     buildStatsHTML(crashData);
+                    buildCharChart(crashData);
 
-                    crashData.forEach((crash) => {
-                        const lat = parseFloat(crash.LATITUDE);
-                        const lng = parseFloat(crash.LONGITUDE);
+                    crashData.forEach(crash => {
+                        const lat = parseFloat(crash.latitude);
+                        const lng = parseFloat(crash.longitude);
+                        if (isNaN(lat) || isNaN(lng)) return;
 
-                        if (!isNaN(lat) && !isNaN(lng)) {
-                            const markerColor = getStatusColor(crash.INCIDENTID);
+                        const marker = L.circleMarker([lat, lng], {
+                            radius: 8,
+                            fillColor: getStatusColor(crash.accident_severity),
+                            color: 'white',
+                            weight: 2,
+                            opacity: 1,
+                            fillOpacity: 1
+                        }).addTo(map);
 
-                            const marker = L.circleMarker([lat, lng], {
-                                radius: 8,
-                                fillColor: markerColor,
-                                color: 'white',
-                                weight: 2,
-                                opacity: 1,
-                                fillOpacity: 1
-                            }).addTo(map);
-
-                            marker.incidentId = crash.INCIDENTID;
-
-                            marker.on('click', function(e) {
-                                L.DomEvent.stopPropagation(e);
-                                showIncidentDetails(crash, marker);
-                            });
-
-                            markers.push({ marker, data: crash });
-                        }
+                        marker.incidentId = crash.incidentid;
+                        marker.severity = crash.accident_severity;
+                        marker.on('click', e => { L.DomEvent.stopPropagation(e); showIncidentDetails(crash, marker); });
+                        markers.push({ marker, data: crash });
                     });
 
                     if (markers.length > 0) {
@@ -350,91 +400,88 @@
                     loadDistricts();
                 })
                 .catch(error => {
-                    document.getElementById('stats').innerHTML = `
-                        <strong style="color: #e74c3c;">Error loading data</strong><br>
-                        ${error.message}
-                    `;
-                    console.error('Error loading ArcGIS data:', error);
+                    document.getElementById('stats').innerHTML =
+                        `<strong style="color:#e74c3c;">Error loading data</strong><br>${error.message}`;
+                    console.error('Error loading CSV:', error);
                 });
         }
 
-        function buildHomeDistanceHTML(label, homeCoords, distStr, color) {
-            if (!homeCoords || homeCoords.lat == null || homeCoords.lng == null) return '';
-            if (!distStr) return '';
+        // ── Map ──────────────────────────────────────────────────────────────
+
+        const map = L.map('map').setView([37.6872, -97.3301], 12);
+
+        L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}{r}.png?api_key=4f4c222f-cf1d-412d-a93a-e8bdaf1e4a3d', {
+            maxZoom: 20,
+            attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://stamen.com/">Stamen Design</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        map.on('click', () => {
+            if (selectedMarker) {
+                selectedMarker.setStyle({ fillColor: getStatusColor(selectedMarker.severity), radius: 8 });
+                selectedMarker = null;
+                homeLines.forEach(l => map.removeLayer(l));
+                homeLines = [];
+            }
+            document.getElementById('sidebar-content').innerHTML =
+                '<div class="placeholder">Click on a marker to view crash details</div>';
+        });
+
+        // ── Incident details ─────────────────────────────────────────────────
+
+        function buildHomeDistanceHTML(label, homeLat, homeLng, distStr, color) {
+            if (!homeLat || !homeLng || !distStr) return '';
             return `
                 <div class="detail-row">
                     <div class="detail-label" style="color:${color};">${label} Home</div>
-                    <div class="detail-value">
-                        <span style="color:${color};">${distStr}</span>
-                    </div>
+                    <div class="detail-value"><span style="color:${color};">${distStr}</span></div>
                 </div>`;
         }
 
-        async function drawHomeLines(crash, addresses) {
+        async function drawHomeLines(crash) {
             homeLines.forEach(l => map.removeLayer(l));
             homeLines = [];
-
-            const crashLat = parseFloat(crash.LATITUDE);
-            const crashLng = parseFloat(crash.LONGITUDE);
+            const crashLat = parseFloat(crash.latitude);
+            const crashLng = parseFloat(crash.longitude);
             const distances = {};
 
             async function fetchRoute(fromLat, fromLng, color, key) {
                 try {
                     const url = `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${crashLng},${crashLat}?overview=full&geometries=geojson`;
-                    const resp = await fetch(url);
-                    const data = await resp.json();
-                    if (data.routes && data.routes.length > 0) {
-                        const line = L.geoJSON(data.routes[0].geometry, {
-                            style: { color, weight: 8, opacity: 1 }
-                        }).addTo(map);
-                        homeLines.push(line);
-                        const meters = data.routes[0].distance;
-                        const miles = meters / 1609.34;
+                    const data = await (await fetch(url)).json();
+                    if (data.routes?.length > 0) {
+                        homeLines.push(L.geoJSON(data.routes[0].geometry, { style: { color, weight: 8, opacity: 1 } }).addTo(map));
+                        const miles = data.routes[0].distance / 1609.34;
                         distances[key] = miles < 0.1 ? (miles * 5280).toFixed(0) + ' ft' : miles.toFixed(2) + ' mi';
                     }
                 } catch (e) { console.warn('Route fetch failed', e); }
             }
 
-            if (addresses.pedestrian?.lat && addresses.pedestrian?.lng)
-                await fetchRoute(addresses.pedestrian.lat, addresses.pedestrian.lng, PEDESTRIAN_COLOR, 'pedestrian');
-
-            if (addresses.driver?.lat && addresses.driver?.lng)
-                await fetchRoute(addresses.driver.lat, addresses.driver.lng, DRIVER_COLOR, 'driver');
+            if (crash.pedestrian_home_lat && crash.pedestrian_home_lng)
+                await fetchRoute(parseFloat(crash.pedestrian_home_lat), parseFloat(crash.pedestrian_home_lng), PEDESTRIAN_COLOR, 'pedestrian');
+            if (crash.driver_home_lat && crash.driver_home_lng)
+                await fetchRoute(parseFloat(crash.driver_home_lat), parseFloat(crash.driver_home_lng), DRIVER_COLOR, 'driver');
 
             return distances;
         }
 
         async function showIncidentDetails(crash, marker) {
-            if (selectedMarker) {
-                selectedMarker.setStyle({
-                    fillColor: getStatusColor(selectedMarker.incidentId),
-                    radius: 8
-                });
-            }
+            if (selectedMarker)
+                selectedMarker.setStyle({ fillColor: getStatusColor(selectedMarker.severity), radius: 8 });
 
-            marker.setStyle({
-                fillColor: getStatusColor(marker.incidentId),
-                radius: 12
-            });
+            marker.setStyle({ fillColor: getStatusColor(marker.severity), radius: 12 });
             selectedMarker = marker;
 
-            const addresses = homeAddresses[crash.INCIDENTID] || {};
-            const distances = await drawHomeLines(crash, addresses);
+            const distances = await drawHomeLines(crash);
 
             let dateStr = 'Unknown date';
-            if (crash.ACCIDENT_DATE) {
-                const date = new Date(crash.ACCIDENT_DATE);
-                dateStr = date.toLocaleDateString('en-US', {
-                    weekday: 'long',
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
+            if (crash.accident_date) {
+                dateStr = new Date(crash.accident_date).toLocaleDateString('en-US', {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
                 });
             }
 
-            const detailsHTML = `
+            document.getElementById('sidebar-content').innerHTML = `
                 <div class="crash-details">
                     <h2>Crash Details</h2>
 
@@ -443,55 +490,49 @@
                         <div class="detail-value">${dateStr}</div>
                     </div>
 
-                    ${crash.INTERSECTION ? `
+                    ${crash.intersection ? `
                     <div class="detail-row">
                         <div class="detail-label">Intersection</div>
-                        <div class="detail-value">${crash.INTERSECTION}</div>
-                    </div>
-                    ` : ''}
+                        <div class="detail-value">${crash.intersection}</div>
+                    </div>` : ''}
 
-                    ${buildHomeDistanceHTML('Pedestrian', addresses.pedestrian, distances.pedestrian, PEDESTRIAN_COLOR)}
-                    ${addresses.pedestrian?.dob ? `
+                    ${buildHomeDistanceHTML('Pedestrian', crash.pedestrian_home_lat, crash.pedestrian_home_lng, distances.pedestrian, PEDESTRIAN_COLOR)}
+                    ${crash.pedestrian_dob ? `
                     <div class="detail-row">
                         <div class="detail-label" style="color:${PEDESTRIAN_COLOR};">Pedestrian Age</div>
-                        <div class="detail-value" style="color:${PEDESTRIAN_COLOR};">${calculateAge(addresses.pedestrian.dob, crash.ACCIDENT_DATE)}</div>
+                        <div class="detail-value" style="color:${PEDESTRIAN_COLOR};">${calculateAge(crash.pedestrian_dob, crash.accident_date)}</div>
                     </div>` : ''}
 
-                    ${buildHomeDistanceHTML('Driver', addresses.driver, distances.driver, DRIVER_COLOR)}
-                    ${addresses.driver?.dob ? `
+                    ${buildHomeDistanceHTML('Driver', crash.driver_home_lat, crash.driver_home_lng, distances.driver, DRIVER_COLOR)}
+                    ${crash.driver_dob ? `
                     <div class="detail-row">
                         <div class="detail-label" style="color:${DRIVER_COLOR};">Driver Age</div>
-                        <div class="detail-value" style="color:${DRIVER_COLOR};">${calculateAge(addresses.driver.dob, crash.ACCIDENT_DATE)}</div>
+                        <div class="detail-value" style="color:${DRIVER_COLOR};">${calculateAge(crash.driver_dob, crash.accident_date)}</div>
                     </div>` : ''}
 
-                    ${getIncidentStatus(crash.INCIDENTID) ? `
+                    ${crash.accident_severity ? `
                     <div class="detail-row">
-                        <div class="detail-label" style="color:${getStatusColor(crash.INCIDENTID)};">Condition</div>
-                        <div class="detail-value" style="color:${getStatusColor(crash.INCIDENTID)};">${getIncidentStatus(crash.INCIDENTID)}</div>
-                    </div>
-                    ` : ''}
+                        <div class="detail-label" style="color:${getStatusColor(crash.accident_severity)};">Condition</div>
+                        <div class="detail-value" style="color:${getStatusColor(crash.accident_severity)};">${crash.accident_severity}</div>
+                    </div>` : ''}
+
+                    ${crash._tags && crash._tags.length > 0 ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Characteristics</div>
+                        <div class="detail-value char-tag-list">
+                            ${crash._tags.map(t => `<span class="char-tag">${t}</span>`).join('')}
+                        </div>
+                    </div>` : ''}
 
                     <div class="detail-row">
                         <div class="detail-label">Incident ID</div>
-                        <div class="detail-value">${crash.INCIDENTID || 'Unknown'}</div>
+                        <div class="detail-value">${crash.incidentid || 'Unknown'}</div>
                     </div>
-
-                    ${crash.INCIDENTID ? `
-                    <div class="detail-row">
-                        <div class="detail-label">Crash Report</div>
-                        <div onclick="window.open('photos/${crash.INCIDENTID}.pdf', '_blank')"
-                             style="cursor: pointer; position: relative;">
-                            <iframe src="photos/${crash.INCIDENTID}.pdf"
-                                    style="width: 100%; height: 500px; margin-top: 10px; border-radius: 4px; border: none; pointer-events: none;"
-                                    onerror="this.parentElement.style.display='none'"></iframe>
-                        </div>
-                    </div>
-                    ` : ''}
                 </div>
             `;
-
-            document.getElementById('sidebar-content').innerHTML = detailsHTML;
         }
+
+        loadCrashData();
     </script>
 </body>
 </html>
