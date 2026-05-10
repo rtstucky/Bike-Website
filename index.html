@@ -27,6 +27,13 @@
                     <div class="title-box-btm"></div>
                 </div>
                 <p>Wichita, Kansas</p>
+                <div id="view-mode-wrap">
+                    <select id="view-mode" onchange="switchViewMode(this.value)">
+                        <option value="crashes">Crash Locations</option>
+                        <option value="ped-homes">Pedestrian Homes</option>
+                        <option value="drv-homes">Driver Homes</option>
+                    </select>
+                </div>
             </div>
             <div id="stats">Loading data...</div>
             <div id="district-filter">
@@ -62,12 +69,26 @@
         const PEDESTRIAN_COLOR = '#cab2d6';
         const DRIVER_COLOR     = '#b15928';
 
+        const ALL_SEVERITIES = ['Fatality','Code Red','Code Yellow','Code Green','Decline EMS/No injuries reported','Unsorted'];
+        let selectedSeverities = new Set(ALL_SEVERITIES);
+
+        function toggleSeverity(sev) {
+            if (selectedSeverities.has(sev)) selectedSeverities.delete(sev);
+            else selectedSeverities.add(sev);
+            applyFilters();
+        }
+
         let markers = [];
+        let pedHomeMarkers = [];
+        let drvHomeMarkers = [];
+        let viewMode = 'crashes';
         let selectedMarker = null;
         let crashData = [];
         let homeLines = [];
         let districts = [];
         let crashDistricts = {};
+        let pedHomeDistricts = {};
+        let drvHomeDistricts = {};
         let selectedDistricts = new Set(['All']);
         let selectedCharacteristics = new Set();
         let allCharacteristics = [];
@@ -130,21 +151,46 @@
             const isAllDistricts = selectedDistricts.has('All') || selectedDistricts.size === 0;
             const isAllChars = selectedCharacteristics.size === 0;
 
+            const districtMap = viewMode === 'ped-homes' ? pedHomeDistricts
+                              : viewMode === 'drv-homes' ? drvHomeDistricts
+                              : crashDistricts;
+
             const visibleCrashes = crashData.filter(crash => {
-                const districtOk = isAllDistricts || selectedDistricts.has(crashDistricts[crash.incidentid]);
+                const districtOk = isAllDistricts || selectedDistricts.has(districtMap[crash.incidentid]);
                 const charOk = isAllChars || crash._tags.some(t => selectedCharacteristics.has(t));
-                return districtOk && charOk;
+                const sevOk = selectedSeverities.has(crash.accident_severity || 'Unsorted');
+                return districtOk && charOk && sevOk;
             });
+            const visibleIds = new Set(visibleCrashes.map(c => c.incidentid));
 
             markers.forEach(({ marker, data }) => {
-                const districtOk = isAllDistricts || selectedDistricts.has(crashDistricts[data.incidentid]);
-                const charOk = isAllChars || data._tags.some(t => selectedCharacteristics.has(t));
-                if (districtOk && charOk) marker.addTo(map);
+                if (viewMode === 'crashes' && visibleIds.has(data.incidentid)) marker.addTo(map);
+                else map.removeLayer(marker);
+            });
+            pedHomeMarkers.forEach(({ marker, data }) => {
+                if (viewMode === 'ped-homes' && visibleIds.has(data.incidentid)) marker.addTo(map);
+                else map.removeLayer(marker);
+            });
+            drvHomeMarkers.forEach(({ marker, data }) => {
+                if (viewMode === 'drv-homes' && visibleIds.has(data.incidentid)) marker.addTo(map);
                 else map.removeLayer(marker);
             });
 
             buildStatsHTML(visibleCrashes);
             buildCharChart(visibleCrashes);
+        }
+
+        function switchViewMode(mode) {
+            viewMode = mode;
+            if (selectedMarker) {
+                selectedMarker.setStyle({ fillColor: getStatusColor(selectedMarker.severity), radius: 8 });
+                selectedMarker = null;
+                homeLines.forEach(l => map.removeLayer(l));
+                homeLines = [];
+            }
+            document.getElementById('sidebar-content').innerHTML =
+                '<div class="placeholder">Click on a marker to view crash details</div>';
+            applyFilters();
         }
 
         function buildCharChart(visibleCrashes) {
@@ -255,14 +301,21 @@
             const medPedDist    = median(pedDists)?.toFixed(2) ?? 'N/A';
             const medDriverDist = median(driverDists)?.toFixed(2) ?? 'N/A';
 
+            const sevRow = (label, sev, color, count) => {
+                const on = selectedSeverities.has(sev);
+                const style = `color:${color};cursor:pointer;${on ? '' : 'opacity:0.35;text-decoration:line-through;'}`;
+                return `<div onclick="toggleSeverity('${sev}')" style="${style}"><strong>${label}:</strong> ${count}</div>`;
+            };
+
             document.getElementById('stats').innerHTML = `
                 <strong>Total Crashes:</strong> ${visibleCrashes.length}<br>
-                <strong style="color:${FATALITY_COLOR};">Fatality:</strong> <span style="color:${FATALITY_COLOR};">${fatalityCount}</span><br>
-                <strong style="color:${CODE_RED_COLOR};">Code Red:</strong> <span style="color:${CODE_RED_COLOR};">${codeRedCount}</span><br>
-                <strong style="color:${CODE_YELLOW_COLOR};">Code Yellow:</strong> <span style="color:${CODE_YELLOW_COLOR};">${codeYellowCount}</span><br>
-                <strong style="color:${CODE_GREEN_COLOR};">Code Green:</strong> <span style="color:${CODE_GREEN_COLOR};">${codeGreenCount}</span><br>
-                <strong style="color:${DECLINE_COLOR};">Decline EMS:</strong> <span style="color:${DECLINE_COLOR};">${declineCount}</span><br>
-                <strong style="color:${DEFAULT_COLOR};">Unsorted:</strong> <span style="color:${DEFAULT_COLOR};">${unknownCount}</span><br><br>
+                ${sevRow('Fatality',    'Fatality',                         FATALITY_COLOR,    fatalityCount)}
+                ${sevRow('Code Red',    'Code Red',                         CODE_RED_COLOR,    codeRedCount)}
+                ${sevRow('Code Yellow', 'Code Yellow',                      CODE_YELLOW_COLOR, codeYellowCount)}
+                ${sevRow('Code Green',  'Code Green',                       CODE_GREEN_COLOR,  codeGreenCount)}
+                ${sevRow('Decline EMS', 'Decline EMS/No injuries reported', DECLINE_COLOR,     declineCount)}
+                ${sevRow('Unsorted',    'Unsorted',                         DEFAULT_COLOR,     unknownCount)}
+                <br>
                 <strong style="color:${PEDESTRIAN_COLOR};">Median Ped Age:</strong> <span style="color:${PEDESTRIAN_COLOR};">${medPedAge}</span><br>
                 <strong style="color:${DRIVER_COLOR};">Median Driver Age:</strong> <span style="color:${DRIVER_COLOR};">${medDriverAge}</span><br>
                 <strong style="color:${PEDESTRIAN_COLOR};">Median Ped Distance:</strong> <span style="color:${PEDESTRIAN_COLOR};">${medPedDist} mi</span><br>
@@ -308,13 +361,42 @@
                 .then(data => {
                     districts = data.features;
                     crashData.forEach(crash => {
+                        const id = crash.incidentid;
+
+                        // Crash district
                         const lat = parseFloat(crash.latitude);
                         const lng = parseFloat(crash.longitude);
-                        if (isNaN(lat) || isNaN(lng)) return;
-                        for (const district of districts) {
-                            if (pointInPolygon(lat, lng, district.geometry)) {
-                                crashDistricts[crash.incidentid] = String(district.properties['COUNCIL']);
-                                break;
+                        if (!isNaN(lat) && !isNaN(lng)) {
+                            for (const d of districts) {
+                                if (pointInPolygon(lat, lng, d.geometry)) {
+                                    crashDistricts[id] = String(d.properties['COUNCIL']); break;
+                                }
+                            }
+                        }
+
+                        // Pedestrian home district
+                        if (crash.pedestrian_home_lat && crash.pedestrian_home_lng) {
+                            const pLat = parseFloat(crash.pedestrian_home_lat);
+                            const pLng = parseFloat(crash.pedestrian_home_lng);
+                            if (!isNaN(pLat) && !isNaN(pLng)) {
+                                for (const d of districts) {
+                                    if (pointInPolygon(pLat, pLng, d.geometry)) {
+                                        pedHomeDistricts[id] = String(d.properties['COUNCIL']); break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Driver home district
+                        if (crash.driver_home_lat && crash.driver_home_lng) {
+                            const dLat = parseFloat(crash.driver_home_lat);
+                            const dLng = parseFloat(crash.driver_home_lng);
+                            if (!isNaN(dLat) && !isNaN(dLng)) {
+                                for (const d of districts) {
+                                    if (pointInPolygon(dLat, dLng, d.geometry)) {
+                                        drvHomeDistricts[id] = String(d.properties['COUNCIL']); break;
+                                    }
+                                }
                             }
                         }
                     });
@@ -377,6 +459,7 @@
                         const lng = parseFloat(crash.longitude);
                         if (isNaN(lat) || isNaN(lng)) return;
 
+                        // Crash marker
                         const marker = L.circleMarker([lat, lng], {
                             radius: 8,
                             fillColor: getStatusColor(crash.accident_severity),
@@ -385,11 +468,48 @@
                             opacity: 1,
                             fillOpacity: 1
                         }).addTo(map);
-
                         marker.incidentId = crash.incidentid;
                         marker.severity = crash.accident_severity;
                         marker.on('click', e => { L.DomEvent.stopPropagation(e); showIncidentDetails(crash, marker); });
                         markers.push({ marker, data: crash });
+
+                        // Pedestrian home marker (hidden until ped-homes mode)
+                        if (crash.pedestrian_home_lat && crash.pedestrian_home_lng) {
+                            const pLat = parseFloat(crash.pedestrian_home_lat);
+                            const pLng = parseFloat(crash.pedestrian_home_lng);
+                            if (!isNaN(pLat) && !isNaN(pLng)) {
+                                const pm = L.circleMarker([pLat, pLng], {
+                                    radius: 8,
+                                    fillColor: getStatusColor(crash.accident_severity),
+                                    color: 'white',
+                                    weight: 2,
+                                    opacity: 1,
+                                    fillOpacity: 1
+                                });
+                                pm.severity = crash.accident_severity;
+                                pm.on('click', e => { L.DomEvent.stopPropagation(e); showIncidentDetails(crash, pm); });
+                                pedHomeMarkers.push({ marker: pm, data: crash });
+                            }
+                        }
+
+                        // Driver home marker (hidden until drv-homes mode)
+                        if (crash.driver_home_lat && crash.driver_home_lng) {
+                            const dLat = parseFloat(crash.driver_home_lat);
+                            const dLng = parseFloat(crash.driver_home_lng);
+                            if (!isNaN(dLat) && !isNaN(dLng)) {
+                                const dm = L.circleMarker([dLat, dLng], {
+                                    radius: 8,
+                                    fillColor: getStatusColor(crash.accident_severity),
+                                    color: 'white',
+                                    weight: 2,
+                                    opacity: 1,
+                                    fillOpacity: 1
+                                });
+                                dm.severity = crash.accident_severity;
+                                dm.on('click', e => { L.DomEvent.stopPropagation(e); showIncidentDetails(crash, dm); });
+                                drvHomeMarkers.push({ marker: dm, data: crash });
+                            }
+                        }
                     });
 
                     if (markers.length > 0) {

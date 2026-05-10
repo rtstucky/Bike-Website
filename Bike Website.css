@@ -104,6 +104,26 @@ select, select option {
     opacity: 0.9;
 }
 
+#view-mode-wrap {
+    margin-top: 10px;
+}
+
+#view-mode {
+    width: 100%;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 4px 6px;
+    border: 1px solid #000;
+    background: #fff;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23000'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 24px;
+}
+
 #stats {
     padding: 20px 0;
     background: transparent;
