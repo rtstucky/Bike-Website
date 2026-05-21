@@ -258,13 +258,18 @@
             gravityMarkers.forEach(m => map.removeLayer(m));
             gravityMarkers = [];
 
-            if (viewMode !== 'crashes') return;
+            const latField = viewMode === 'ped-homes' ? 'pedestrian_home_lat'
+                           : viewMode === 'drv-homes' ? 'driver_home_lat'
+                           : 'latitude';
+            const lngField = viewMode === 'ped-homes' ? 'pedestrian_home_lng'
+                           : viewMode === 'drv-homes' ? 'driver_home_lng'
+                           : 'longitude';
 
             const groups = {};
             visibleCrashes.forEach(crash => {
                 const sev = crash.accident_severity || 'Unsorted';
-                const lat = parseFloat(crash.latitude);
-                const lng = parseFloat(crash.longitude);
+                const lat = parseFloat(crash[latField]);
+                const lng = parseFloat(crash[lngField]);
                 if (!isNaN(lat) && !isNaN(lng)) {
                     if (!groups[sev]) groups[sev] = { lats: [], lngs: [] };
                     groups[sev].lats.push(lat);
