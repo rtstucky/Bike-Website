@@ -92,6 +92,7 @@
         let selectedDistricts = new Set(['All']);
         let selectedCharacteristics = new Set();
         let allCharacteristics = [];
+        let gravityMarkers = [];
 
         // ── Characteristics parsing ──────────────────────────────────────────
 
@@ -178,6 +179,7 @@
 
             buildStatsHTML(visibleCrashes);
             buildCharChart(visibleCrashes);
+            updateGravityMarkers(visibleCrashes);
         }
 
         function switchViewMode(mode) {
@@ -250,6 +252,42 @@
             const sorted = [...arr].sort((a, b) => a - b);
             const mid = Math.floor(sorted.length / 2);
             return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+        }
+
+        function updateGravityMarkers(visibleCrashes) {
+            gravityMarkers.forEach(m => map.removeLayer(m));
+            gravityMarkers = [];
+
+            if (viewMode !== 'crashes') return;
+
+            const groups = {};
+            visibleCrashes.forEach(crash => {
+                const sev = crash.accident_severity || 'Unsorted';
+                const lat = parseFloat(crash.latitude);
+                const lng = parseFloat(crash.longitude);
+                if (!isNaN(lat) && !isNaN(lng)) {
+                    if (!groups[sev]) groups[sev] = { lats: [], lngs: [] };
+                    groups[sev].lats.push(lat);
+                    groups[sev].lngs.push(lng);
+                }
+            });
+
+            Object.entries(groups).forEach(([sev, { lats, lngs }]) => {
+                if (lats.length < 2) return;
+                const medLat = median(lats);
+                const medLng = median(lngs);
+                const color = getStatusColor(sev);
+                const m = L.circleMarker([medLat, medLng], {
+                    radius: 13,
+                    color: color,
+                    weight: 3,
+                    fillColor: '#ffffff',
+                    fillOpacity: 0.85,
+                    pane: 'markerPane',
+                }).addTo(map);
+                m.bindTooltip(`<strong>${sev}</strong><br>Median center (n=${lats.length})`, { sticky: true });
+                gravityMarkers.push(m);
+            });
         }
 
         function haversineDistance(lat1, lng1, lat2, lng2) {
